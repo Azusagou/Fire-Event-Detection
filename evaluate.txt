@@ -1,0 +1,4 @@
+valid_indices  shape: (526, 160000), balance: (0 : 0.19961977186311788, 1 : 0.8003802281368821)
+test_indices  shape: (1053, 160000), balance: (0 : 0.15859449192782527, 1 : 0.8414055080721747)
+Learning rate: 0.0001, accuracy: 0.9867424242424242 (valid)
+Learning rate: 0.0001, accuracy: 0.9801136363636364 (test)
