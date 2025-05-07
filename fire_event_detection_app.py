@@ -126,7 +126,20 @@ def predict_with_bocd(audio_path):
         # 应用BOCD进行变点检测
         print("正在进行变点检测...")
         bocd_start = time.time()
-        detection_results = bocd_detector.detect(np.array(probabilities))
+        
+        # 对于非常短的序列，特殊处理
+        if len(probabilities) < 3:
+            print("警告: 音频片段过少，无法进行可靠的变点检测")
+            # 创建简单的结果
+            detection_results = {
+                'filtered_probs': np.array(probabilities),  # 不进行平滑
+                'change_points': [],  # 没有变点
+                'event_intervals': [(0, len(probabilities)-1)] if np.mean(probabilities) > 0.5 else []  # 如果平均概率>0.5，则视为整个序列是一个事件
+            }
+        else:
+            # 正常进行变点检测
+            detection_results = bocd_detector.detect(np.array(probabilities))
+            
         print(f"变点检测完成，耗时: {time.time() - bocd_start:.2f}秒")
         
         # 可视化结果
@@ -190,33 +203,66 @@ def visualize_detection_results(probabilities, detection_results, segment_durati
     change_points = detection_results['change_points']
     event_intervals = detection_results['event_intervals']
     
+    # 确保原始概率和平滑概率长度一致
+    if len(probabilities) != len(smoothed_probs):
+        print(f"警告: 原始概率长度({len(probabilities)})和平滑概率长度({len(smoothed_probs)})不一致")
+        # 如果长度不一致，则使用相同长度的数据进行绘图
+        min_len = min(len(probabilities), len(smoothed_probs))
+        probabilities = probabilities[:min_len]
+        smoothed_probs = smoothed_probs[:min_len]
+    
     # 创建时间轴
     time_axis = np.arange(len(probabilities)) * segment_duration
     
     plt.figure(figsize=(12, 6))
     
-    # 绘制原始概率和平滑后的概率
-    plt.plot(time_axis, probabilities, 'b-', alpha=0.5, label='原始概率')
-    plt.plot(time_axis, smoothed_probs, 'g-', label='平滑后的概率')
+    # 计算变点概率
+    n = len(probabilities)
+    run_length_dist = np.zeros((n, n))
+    run_length_dist[0, 0] = 1
+    change_point_probs = np.zeros(n)
+    threshold = bocd_detector.threshold  # 使用全局BOCD检测器的阈值
     
-    # 绘制变点
-    for cp in change_points:
-        plt.axvline(x=cp*segment_duration, color='r', linestyle='--', alpha=0.7)
-    
-    # 高亮火灾事件区间
-    for start, end in event_intervals:
-        plt.axvspan(start*segment_duration, end*segment_duration, 
-                   color='r', alpha=0.2)
+    # 计算每个时间点的变点概率
+    for t in range(1, n):
+        hazard = np.array([bocd_detector._constant_hazard(r) for r in range(t)])
+        pred_history = smoothed_probs[:t]
+        likelihood = np.array([
+            bocd_detector._gaussian_likelihood(smoothed_probs[t], pred_history, r) 
+            for r in range(t)
+        ])
         
-        # 添加标签
-        mid_point = (start + end) / 2
-        plt.text(mid_point*segment_duration, 0.9, "火灾事件", 
-                horizontalalignment='center', color='r', fontsize=12)
+        growth_probs = run_length_dist[t-1, :t] * (1 - hazard) * likelihood
+        cp_prob = np.sum(run_length_dist[t-1, :t] * hazard * likelihood)
+        
+        run_length_dist[t, 1:t+1] = growth_probs
+        run_length_dist[t, 0] = cp_prob
+        
+        run_length_dist[t, :t+1] /= np.sum(run_length_dist[t, :t+1]) + 1e-9
+        change_point_probs[t] = run_length_dist[t, 0]
+    
+    # 根据阈值绘制不同颜色的变点概率
+    below_threshold = change_point_probs < threshold
+    above_threshold = ~below_threshold
+    
+    # 绘制低于阈值的点（绿色）
+    if np.any(below_threshold):
+        plt.plot(time_axis[below_threshold], change_point_probs[below_threshold], 
+                'g-', label=f'变点概率 < {threshold}')
+    
+    # 绘制高于阈值的点（红色）
+    if np.any(above_threshold):
+        plt.plot(time_axis[above_threshold], change_point_probs[above_threshold], 
+                'r-', label=f'变点概率 ≥ {threshold}')
+    
+    # 绘制阈值线
+    plt.axhline(y=threshold, color='k', linestyle='--', alpha=0.5, 
+               label=f'阈值 ({threshold})')
     
     plt.grid(True)
     plt.xlabel('时间 (秒)', fontsize=12)
-    plt.ylabel('火灾概率', fontsize=12)
-    plt.title('火灾事件检测结果', fontsize=14)
+    plt.ylabel('变点概率', fontsize=12)
+    plt.title('火灾事件变点检测结果', fontsize=14)
     plt.legend(fontsize=10)
     plt.ylim(-0.05, 1.05)
     plt.tight_layout()
