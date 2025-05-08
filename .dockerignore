@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 测试和实验结果
+test_results/
+experiments/
+wav/
+
+# 数据集文件
+dataset_spruce_oak_pmma_pur_chipboard_sr_32000.hdf5
+*.mp3
+*.WAV
+*.wav
+spruce_oak_pmma_pur_chipboard.csv
+
+# 训练相关文件
+dataset.py
+models.py
+baseline.py
+baseline_app.py
+test_fire_detection.py
+produce_figures_and_tables.py
+convert_model.py
+
+# Gradio缓存
+.gradio/
+
+# 文档
+document/
+*.md

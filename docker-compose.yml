@@ -1,0 +1,30 @@
+version: '3'
+services:
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - .:/app
+      - numba_cache:/tmp/numba_cache
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - PIP_NO_CACHE_DIR=1
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+    user: root
+    command: >
+      bash -c "apt-get update &&
+               apt-get install -y fonts-wqy-microhei fonts-wqy-zenhei &&
+               fc-cache -f -v &&
+               python -m pip install --no-cache-dir -r requirements.txt &&
+               mkdir -p /tmp/numba_cache &&
+               chmod 777 /tmp/numba_cache &&
+               chown -R nobody:nogroup /tmp/numba_cache &&
+               su nobody -s /bin/bash -c 'python fire_event_detection_app.py'"
+
+volumes:
+  numba_cache: 

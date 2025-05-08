@@ -5,14 +5,44 @@ import librosa
 import gradio as gr
 import onnxruntime as ort
 import matplotlib.pyplot as plt
-from prepare_data import split_into_segments
-from bocd_detector import BayesianOnlineChangePointDetection
 import tempfile
 import matplotlib as mpl
+from bocd_detector import BayesianOnlineChangePointDetection
+
+def split_into_segments(wave, sample_rate, segment_time):
+    """ Split a wave into segments of segment_size. Repeat signal to get equal
+    length segments.
+    将音频波形分割成等长片段
+    
+    Args:
+        wave: 音频波形数据
+        sample_rate: 采样率
+        segment_time: 每个片段的时长(秒)
+        
+    Returns:
+        list: 分割后的音频片段列表
+    """
+    segment_size = sample_rate * segment_time
+    wave_size = wave.shape[0]
+
+    nb_remove = wave_size % segment_size
+    if nb_remove > 0:
+        truncated_wave = wave[:-nb_remove]
+    else:
+        truncated_wave = wave
+
+    if not truncated_wave.shape[0] % segment_size == 0:
+       raise ValueError("reapeated wave not even multiple of segment size")
+
+    nb_segments = int(truncated_wave.shape[0]/segment_size)
+    segments = np.split(truncated_wave, nb_segments, axis=0)
+
+    return segments
 
 # 设置matplotlib支持中文显示
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'sans-serif']  # 优先使用的中文字体
-plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams['font.family'] = 'sans-serif'
 
 # 模型参数设置
 sample_rate = 32000  # 采样率
@@ -27,8 +57,9 @@ segment_time = 5     # 音频片段时长(秒)
 # 全局变量存储ONNX会话和BOCD检测器
 global_session = None
 bocd_detector = BayesianOnlineChangePointDetection(
-    threshold=0.3,  # 变点检测阈值
-    smoothing_window=5  # 平滑窗口大小
+    threshold=0.2,  # 变点检测阈值
+    smoothing_window=2,  # 平滑窗口大小
+    trend_memory=0.7  # 时序趋势记忆系数
 )
 
 def load_onnx_model():
@@ -202,11 +233,11 @@ def visualize_detection_results(probabilities, detection_results, segment_durati
     smoothed_probs = detection_results['filtered_probs']
     change_points = detection_results['change_points']
     event_intervals = detection_results['event_intervals']
+    change_point_probs = detection_results.get('change_point_probs', None)
     
     # 确保原始概率和平滑概率长度一致
     if len(probabilities) != len(smoothed_probs):
         print(f"警告: 原始概率长度({len(probabilities)})和平滑概率长度({len(smoothed_probs)})不一致")
-        # 如果长度不一致，则使用相同长度的数据进行绘图
         min_len = min(len(probabilities), len(smoothed_probs))
         probabilities = probabilities[:min_len]
         smoothed_probs = smoothed_probs[:min_len]
@@ -214,60 +245,65 @@ def visualize_detection_results(probabilities, detection_results, segment_durati
     # 创建时间轴
     time_axis = np.arange(len(probabilities)) * segment_duration
     
-    plt.figure(figsize=(12, 6))
+    # 创建两个子图
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[1, 1])
+    fig.suptitle('火灾事件检测结果', fontsize=14)
     
-    # 计算变点概率
-    n = len(probabilities)
-    run_length_dist = np.zeros((n, n))
-    run_length_dist[0, 0] = 1
-    change_point_probs = np.zeros(n)
-    threshold = bocd_detector.threshold  # 使用全局BOCD检测器的阈值
+    # 上半部分显示原始概率和平滑后的概率
+    ax1.plot(time_axis, probabilities, 'b-', alpha=0.5, label='原始概率')
+    ax1.plot(time_axis, smoothed_probs, 'g-', label='平滑后的概率')
     
-    # 计算每个时间点的变点概率
-    for t in range(1, n):
-        hazard = np.array([bocd_detector._constant_hazard(r) for r in range(t)])
-        pred_history = smoothed_probs[:t]
-        likelihood = np.array([
-            bocd_detector._gaussian_likelihood(smoothed_probs[t], pred_history, r) 
-            for r in range(t)
-        ])
+    # 在上半部分标记事件区间
+    for start, end in event_intervals:
+        start = min(start, len(time_axis)-1)
+        end = min(end, len(time_axis)-1)
+        ax1.axvspan(start*segment_duration, end*segment_duration, 
+                   color='r', alpha=0.2)
+        mid_point = (start + end) / 2
+        ax1.text(mid_point*segment_duration, 0.9, "火灾事件", 
+                horizontalalignment='center', color='r', fontsize=10)
+    
+    ax1.grid(True)
+    ax1.set_xlabel('时间 (秒)', fontsize=10)
+    ax1.set_ylabel('火灾概率', fontsize=10)
+    ax1.legend(fontsize=10)
+    ax1.set_ylim(-0.05, 1.05)
+    
+    # 下半部分显示变点概率
+    if change_point_probs is not None:
+        threshold = bocd_detector.threshold
+        below_threshold = change_point_probs < threshold
+        above_threshold = ~below_threshold
         
-        growth_probs = run_length_dist[t-1, :t] * (1 - hazard) * likelihood
-        cp_prob = np.sum(run_length_dist[t-1, :t] * hazard * likelihood)
+        # 绘制低于阈值的点（绿色）
+        if np.any(below_threshold):
+            ax2.plot(time_axis[below_threshold], change_point_probs[below_threshold], 
+                    'g-', label=f'变点概率 < {threshold}')
         
-        run_length_dist[t, 1:t+1] = growth_probs
-        run_length_dist[t, 0] = cp_prob
+        # 绘制高于阈值的点（红色）
+        if np.any(above_threshold):
+            ax2.plot(time_axis[above_threshold], change_point_probs[above_threshold], 
+                    'r-', label=f'变点概率 ≥ {threshold}')
         
-        run_length_dist[t, :t+1] /= np.sum(run_length_dist[t, :t+1]) + 1e-9
-        change_point_probs[t] = run_length_dist[t, 0]
+        # 绘制阈值线
+        ax2.axhline(y=threshold, color='k', linestyle='--', alpha=0.5, 
+                   label=f'阈值 ({threshold})')
+        
+        # 标记检测到的变点
+        for cp in change_points:
+            if cp < len(time_axis):
+                ax2.axvline(x=cp*segment_duration, color='r', linestyle=':', alpha=0.7)
+                ax2.text(cp*segment_duration, 1.02, f'变点\n{cp*segment_duration:.1f}s', 
+                        horizontalalignment='center', fontsize=8)
     
-    # 根据阈值绘制不同颜色的变点概率
-    below_threshold = change_point_probs < threshold
-    above_threshold = ~below_threshold
+    ax2.grid(True)
+    ax2.set_xlabel('时间 (秒)', fontsize=10)
+    ax2.set_ylabel('变点概率', fontsize=10)
+    ax2.legend(fontsize=10)
+    ax2.set_ylim(-0.05, 1.05)
     
-    # 绘制低于阈值的点（绿色）
-    if np.any(below_threshold):
-        plt.plot(time_axis[below_threshold], change_point_probs[below_threshold], 
-                'g-', label=f'变点概率 < {threshold}')
-    
-    # 绘制高于阈值的点（红色）
-    if np.any(above_threshold):
-        plt.plot(time_axis[above_threshold], change_point_probs[above_threshold], 
-                'r-', label=f'变点概率 ≥ {threshold}')
-    
-    # 绘制阈值线
-    plt.axhline(y=threshold, color='k', linestyle='--', alpha=0.5, 
-               label=f'阈值 ({threshold})')
-    
-    plt.grid(True)
-    plt.xlabel('时间 (秒)', fontsize=12)
-    plt.ylabel('变点概率', fontsize=12)
-    plt.title('火灾事件变点检测结果', fontsize=14)
-    plt.legend(fontsize=10)
-    plt.ylim(-0.05, 1.05)
     plt.tight_layout()
-    
-    return plt.gcf()
+    return fig
 
 def save_detection_results(audio_path):
     """保存检测结果到文件
@@ -347,4 +383,4 @@ with gr.Blocks(title="火灾事件音频检测系统 (增强版)") as demo:
 
 # 启动应用
 if __name__ == "__main__":
-    demo.launch(share=True)  # share=True可以生成一个公共链接，方便分享 
+    demo.launch(server_name="0.0.0.0", server_port=7860)  # 配置为Docker环境 
